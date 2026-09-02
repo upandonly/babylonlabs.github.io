@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('node:crypto');
 const fetch = require('node-fetch');
 const parser = require('@babel/parser');
 const traverse = require('@babel/traverse').default;
@@ -21,13 +22,20 @@ function extractJsAndRemoteMD(content) {
   const codeLines = [];
   let inFrontmatter = false;
   let inCodeBlock = false;
-  let inRemoteMD = false, remoteMdBlock = [];
+  let inRemoteMD = false,
+    remoteMdBlock = [];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    if (line.trim() === '---' && !inFrontmatter) { inFrontmatter = true; continue; }
-    if (line.trim() === '---' && inFrontmatter) { inFrontmatter = false; continue; }
+    if (line.trim() === '---' && !inFrontmatter) {
+      inFrontmatter = true;
+      continue;
+    }
+    if (line.trim() === '---' && inFrontmatter) {
+      inFrontmatter = false;
+      continue;
+    }
     if (inFrontmatter) continue;
 
     // Track code block boundaries
@@ -67,7 +75,7 @@ function extractStringVariables(ast) {
       ) {
         vars[node.id.name] = node.init.value;
       }
-    }
+    },
   });
   return vars;
 }
@@ -88,8 +96,8 @@ function extractReleaseVersions(objNode, variables) {
       prop.key.type === 'Identifier'
         ? prop.key.name
         : prop.key.type === 'StringLiteral'
-          ? prop.key.value
-          : '';
+        ? prop.key.value
+        : '';
 
     versions[key] = getValueFromNode(prop.value, variables);
   });
@@ -129,30 +137,45 @@ function findRemoteMDTargets(content, variables) {
 
       node.openingElement.attributes.forEach((attr) => {
         if (attr.name && attr.name.name === 'rawUrl') {
-          rawUrl = getValueFromNode(attr.value?.expression || attr.value, variables);
+          rawUrl = getValueFromNode(
+            attr.value?.expression || attr.value,
+            variables
+          );
         }
 
         if (attr.name && attr.name.name === 'releaseVersions') {
           if (attr.value?.expression?.type === 'ObjectExpression') {
-            releaseVersions = extractReleaseVersions(attr.value.expression, variables);
+            releaseVersions = extractReleaseVersions(
+              attr.value.expression,
+              variables
+            );
           } else if (attr.value?.expression?.type === 'Identifier') {
             const refName = attr.value.expression.name;
             if (variables[refName]) {
               try {
                 releaseVersions = JSON.parse(variables[refName]);
               } catch (e) {
-                console.warn(`Failed to parse releaseVersions from variable: ${refName}`);
+                console.warn(
+                  `Failed to parse releaseVersions from variable: ${refName}`
+                );
               }
             }
           }
         }
 
         if (attr.name && attr.name.name === 'defaultRelease') {
-          defaultRelease = getValueFromNode(attr.value?.expression || attr.value, variables);
+          defaultRelease = getValueFromNode(
+            attr.value?.expression || attr.value,
+            variables
+          );
         }
 
         if (attr.name && attr.name.name === 'hideRelease') {
-          hideRelease = getValueFromNode(attr.value?.expression || attr.value, variables) === true;
+          hideRelease =
+            getValueFromNode(
+              attr.value?.expression || attr.value,
+              variables
+            ) === true;
         }
       });
 
@@ -163,7 +186,7 @@ function findRemoteMDTargets(content, variables) {
           url: rawUrl,
           key: null,
           hideRelease,
-          isDefault: defaultRelease === null
+          isDefault: defaultRelease === null,
         });
         return;
       }
@@ -174,7 +197,10 @@ function findRemoteMDTargets(content, variables) {
             url,
             key,
             hideRelease,
-            isDefault: defaultRelease === key || (defaultRelease === null && key === Object.keys(releaseVersions)[0])
+            isDefault:
+              defaultRelease === key ||
+              (defaultRelease === null &&
+                key === Object.keys(releaseVersions)[0]),
           });
         }
       }
@@ -185,10 +211,10 @@ function findRemoteMDTargets(content, variables) {
           url: defaultUrl,
           key: defaultRelease,
           hideRelease,
-          isDefault: true
+          isDefault: true,
         });
       }
-    }
+    },
   });
 
   return results;
@@ -199,6 +225,117 @@ function clearDirectory(dirPath) {
     fs.rmSync(dirPath, { recursive: true, force: true });
   }
   fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function sha256(content) {
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+function cacheKeyForUrl(sourceUrl) {
+  return sha256(sourceUrl);
+}
+
+function readCacheManifest(cacheDir) {
+  const manifestPath = path.join(cacheDir, 'manifest.json');
+  if (!fs.existsSync(manifestPath)) return { version: 1, entries: {} };
+
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (manifest.version !== 1 || typeof manifest.entries !== 'object') {
+      throw new Error('unsupported manifest format');
+    }
+    return manifest;
+  } catch (error) {
+    console.warn(
+      `::warning::Remote documentation cache manifest is invalid: ${error.message}`
+    );
+    return { version: 1, entries: {} };
+  }
+}
+
+function writeCacheManifest(cacheDir, manifest) {
+  fs.mkdirSync(cacheDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(cacheDir, 'manifest.json'),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    'utf8'
+  );
+}
+
+function cachedContentPath(cacheDir, cacheKey) {
+  return path.join(cacheDir, 'content', `${cacheKey}.md`);
+}
+
+async function fetchRemoteDocument({
+  cacheDir,
+  fetchImpl = fetch,
+  now = () => new Date().toISOString(),
+  outPath,
+  releaseTag = null,
+  sourceUrl,
+  warn = console.warn,
+}) {
+  const cacheKey = cacheKeyForUrl(sourceUrl);
+  const contentPath = cachedContentPath(cacheDir, cacheKey);
+  const manifest = readCacheManifest(cacheDir);
+  const cachedEntry = manifest.entries[cacheKey];
+
+  try {
+    const response = await fetchImpl(sourceUrl);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const markdown = await response.text();
+    if (!markdown.trim()) throw new Error('empty response');
+
+    const contentSha256 = sha256(markdown);
+    const updatedAt =
+      cachedEntry?.contentSha256 === contentSha256
+        ? cachedEntry.updatedAt
+        : now();
+    const entry = {
+      contentSha256,
+      resolvedUrl: response.url || sourceUrl,
+      sourceUrl,
+      sourceVersion: releaseTag,
+      updatedAt,
+    };
+
+    fs.mkdirSync(path.dirname(contentPath), { recursive: true });
+    fs.writeFileSync(contentPath, markdown, 'utf8');
+    manifest.entries[cacheKey] = entry;
+    writeCacheManifest(cacheDir, manifest);
+
+    const html = await mdToStructuredHtml(markdown, releaseTag);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, html, 'utf8');
+    return { ...entry, status: 'fresh' };
+  } catch (error) {
+    if (cachedEntry && fs.existsSync(contentPath)) {
+      const markdown = fs.readFileSync(contentPath, 'utf8');
+      const html = await mdToStructuredHtml(markdown, releaseTag);
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, html, 'utf8');
+      warn(
+        `::warning::Remote documentation fetch failed for ${sourceUrl}: ` +
+          `${error.message}. Using last-known-good cache from ` +
+          `${cachedEntry.updatedAt}.`
+      );
+      return { ...cachedEntry, error: error.message, status: 'cached' };
+    }
+
+    warn(
+      `::warning::Remote documentation fetch failed for ${sourceUrl}: ` +
+        `${error.message}. The build will continue because no cached copy exists.`
+    );
+    return {
+      error: error.message,
+      resolvedUrl: null,
+      sourceUrl,
+      sourceVersion: releaseTag,
+      status: 'missing',
+      updatedAt: null,
+    };
+  }
 }
 
 async function mdToStructuredHtml(mdContent, releaseTag = null) {
@@ -249,11 +386,15 @@ function generateSitemap(urls, baseUrl) {
 ` +
     `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ` +
-    urls.map(url =>
-      `  <url>
+    urls
+      .map(
+        (url) =>
+          `  <url>
     <loc>${baseUrl}${url}</loc>
   </url>`
-    ).join('\n') + ' </urlset>';
+      )
+      .join('\n') +
+    ' </urlset>';
 
   return sitemap;
 }
@@ -261,6 +402,10 @@ function generateSitemap(urls, baseUrl) {
 async function main() {
   const DOCS_DIR = path.resolve(__dirname, '../docs');
   const STATIC_REMOTE_DOCS = path.resolve(__dirname, '../static/remote-docs');
+  const REMOTE_DOCS_CACHE = path.resolve(
+    process.env.REMOTE_DOCS_CACHE_DIR ||
+      path.join(__dirname, '../.cache/remote-docs')
+  );
   const BRANCH_NAME = process.env.BRANCH_NAME;
   const REMOTE_DOCS_BASE_URL =
     BRANCH_NAME === 'main'
@@ -270,8 +415,10 @@ async function main() {
   clearDirectory(STATIC_REMOTE_DOCS);
 
   const mdxFiles = scanMdxFiles(DOCS_DIR, []);
-  let total = 0, errorCount = 0;
+  let total = 0,
+    errorCount = 0;
   const htmlUrls = [];
+  const provenance = [];
 
   for (const mdx of mdxFiles) {
     const mdxContent = fs.readFileSync(mdx, 'utf-8');
@@ -280,7 +427,10 @@ async function main() {
     let variables = {};
 
     try {
-      ast = parser.parse(jsCode, { sourceType: 'module', plugins: ['jsx', 'typescript'] });
+      ast = parser.parse(jsCode, {
+        sourceType: 'module',
+        plugins: ['jsx', 'typescript'],
+      });
       variables = extractStringVariables(ast);
     } catch (e) {
       console.warn(`Failed to parse JS code in ${mdx}: ${e.message}`);
@@ -308,44 +458,78 @@ async function main() {
 
       const outPath = path.join(targetDir, name);
 
-      try {
-        const res = await fetch(url);
-        if (!res.ok) {
-          errorCount++;
-          console.warn(`[WARN] Download failed [${res.status}]: ${url}`);
-          continue;
-        }
+      const fetchResult = await fetchRemoteDocument({
+        cacheDir: REMOTE_DOCS_CACHE,
+        outPath,
+        releaseTag: key,
+        sourceUrl: url,
+      });
+      provenance.push(fetchResult);
 
-        const mdContent = await res.text();
-
-        const htmlContent = await mdToStructuredHtml(mdContent, key);
-        fs.writeFileSync(outPath, htmlContent, 'utf-8');
-
-        const relHtmlPath = path.relative(STATIC_REMOTE_DOCS, outPath).replace(/\\/g, '/');
+      if (fetchResult.status !== 'missing') {
+        const relHtmlPath = path
+          .relative(STATIC_REMOTE_DOCS, outPath)
+          .replace(/\\/g, '/');
 
         const urlWithVersion = key
           ? `${relHtmlPath}?version=${encodeURIComponent(key)}`
           : relHtmlPath;
 
         htmlUrls.push(`/${urlWithVersion}`);
-
-        console.log('Fetched:', url, '=>', outPath, key ? `(version: ${key})` : '');
+        console.log(
+          `${fetchResult.status === 'fresh' ? 'Fetched' : 'Restored'}:`,
+          url,
+          '=>',
+          outPath,
+          key ? `(version: ${key})` : ''
+        );
         total++;
-      } catch (err) {
+      } else {
         errorCount++;
-        console.warn(`[ERROR] ${url} Download failed, reason: ${err.message}`);
       }
     }
   }
 
   if (htmlUrls.length > 0) {
     const sitemapContent = generateSitemap(htmlUrls, REMOTE_DOCS_BASE_URL);
-    const sitemapPath = path.join(STATIC_REMOTE_DOCS, 'remote-docs-sitemap.xml');
+    const sitemapPath = path.join(
+      STATIC_REMOTE_DOCS,
+      'remote-docs-sitemap.xml'
+    );
     fs.writeFileSync(sitemapPath, sitemapContent, 'utf-8');
-    console.log(`Generated sitemap: ${sitemapPath} (contains ${htmlUrls.length} html pages)`);
+    console.log(
+      `Generated sitemap: ${sitemapPath} (contains ${htmlUrls.length} html pages)`
+    );
   }
+
+  fs.writeFileSync(
+    path.join(STATIC_REMOTE_DOCS, 'provenance.json'),
+    `${JSON.stringify(
+      {
+        entries: provenance.sort((left, right) =>
+          left.sourceUrl.localeCompare(right.sourceUrl)
+        ),
+        version: 1,
+      },
+      null,
+      2
+    )}\n`,
+    'utf8'
+  );
 
   console.log(`Total written ${total} remote html files, errors ${errorCount}`);
 }
 
-main();
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  cacheKeyForUrl,
+  fetchRemoteDocument,
+  main,
+  readCacheManifest,
+};

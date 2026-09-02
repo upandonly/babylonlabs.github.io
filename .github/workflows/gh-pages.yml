@@ -5,7 +5,7 @@ on:
     branches:
       - main
       - dev
-      - "*"
+      - '*'
   pull_request:
     branches:
       - main
@@ -66,6 +66,14 @@ jobs:
       - name: Install dependencies
         working-directory: ./
         run: npm ci
+
+      - name: Restore last-known-good remote documentation
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0 https://github.com/actions/cache/releases/tag/v4.3.0
+        with:
+          path: .cache/remote-docs
+          key: remote-docs-${{ runner.os }}-${{ matrix.branch }}-${{ github.sha }}
+          restore-keys: |
+            remote-docs-${{ runner.os }}-${{ matrix.branch }}-
 
       # Build the project
       - name: Build project
