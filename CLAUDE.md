@@ -295,7 +295,7 @@ Canonical source: the Notion page ["Babylon Trustless Bitcoin Vaults (TBV)"](htt
 
 **Core terms**
 - **BTCVault** — one on-chain vault holding a depositor's locked native BTC (one UTXO on Bitcoin, linked to a collateral record on the integrated chain). One word, capitals B, T, C, V. Avoid pluralizing.
-- **collateral record** — lowercase (not a brand name); the on-chain record that recognises the Bitcoin in a BTCVault. Never say "vaultBTC".
+- **collateral record** — lowercase (not a brand name); the on-chain record that recognises the Bitcoin in a BTCVault. Never use "vaultBTC" in prose; keep it verbatim where it is the literal identifier (the deployed contract name / ERC-20 symbol, code, and API fields such as `vaultBtcAddress`).
 - **Vault Creation** — locking Bitcoin into a BTCVault. **Vault Redemption** / **Redeem** — releasing native BTC to the authorized claimer. **Withdraw** — removing collateral or borrowed assets from a position.
 - **Challenge period** — the fraud-proof window before Bitcoin is released.
 - Spokes: **Babylon Core Lending Spoke**, **BTCVault Swap Spoke**. Other contracts: **Aave Adapter**, **Application Registry**, **CapPolicy**, **Aave v4 Hub**.
