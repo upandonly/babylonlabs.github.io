@@ -148,7 +148,7 @@ wget -O $HOME/.babylond/config/addrbook.json https://server-2.itrocket.net/mainn
 
 **1. Set seeds and peers:**
 ```bash
-SEEDS="145ee7d64ae5d3f6a8ceb6b7dba889f7de48de06@babylon-mainnet-seed.itrocket.net:27656"
+SEEDS="145ee7d64ae5d3f6a8ceb6b7dba889f7de48de06@babylon-mainnet-seed.itrocket.net:27656,8542cd7e6bf9d260fef543bc49e59be5a3fa9074@seed.publicnode.com:26656"
 PEERS="b16397b576f2431c8a80efa4f5338c1b82583916@babylon-mainnet-peer.itrocket.net:27656"
 
 sed -i -e "/^\[p2p\]/,/^\[/{s/^[[:space:]]*seeds *=.*/seeds = \"$SEEDS\"/}" \
